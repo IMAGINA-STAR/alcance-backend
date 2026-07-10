@@ -1,6 +1,7 @@
 const express = require('express');
 const pool = require('../db/pool');
 const { requireAuth, requireRole } = require('../middleware/auth');
+const { createCheckout, getCheckout } = require('../services/recurrente');
 
 const router = express.Router();
 const COMMISSION_RATE = 12.0; // porcentaje que se queda la plataforma
@@ -61,12 +62,14 @@ router.get('/sent', requireAuth, requireRole('anunciante'), async (req, res) => 
   try {
     const result = await pool.query(
       `SELECT r.id, r.message, r.offered_budget, r.status, r.created_at,
-              s.content_type, u.name AS influencer_name
+              s.content_type, u.name AS influencer_name,
+              COALESCE(t.status, NULL) AS payment_status
        FROM requests r
        JOIN spaces s ON s.id = r.space_id
        JOIN influencer_profiles ip ON ip.id = s.influencer_id
        JOIN users u ON u.id = ip.user_id
        JOIN advertiser_profiles ap ON ap.id = r.advertiser_id
+       LEFT JOIN transactions t ON t.request_id = r.id
        WHERE ap.user_id = $1
        ORDER BY r.created_at DESC`,
       [req.user.id]
@@ -129,6 +132,103 @@ router.patch('/:id/respond', requireAuth, requireRole('influencer'), async (req,
     res.status(500).json({ error: 'Error al responder la solicitud.' });
   } finally {
     client.release();
+  }
+});
+
+// POST /api/requests/:id/checkout
+// El anunciante genera un link de pago de Recurrente para una solicitud ya aceptada.
+router.post('/:id/checkout', requireAuth, requireRole('anunciante'), async (req, res) => {
+  const { id } = req.params;
+
+  try {
+    const result = await pool.query(
+      `SELECT r.id, r.status, s.content_type, u.name AS influencer_name,
+              t.id AS transaction_id, t.amount, t.status AS transaction_status, t.payment_reference
+       FROM requests r
+       JOIN spaces s ON s.id = r.space_id
+       JOIN influencer_profiles ip ON ip.id = s.influencer_id
+       JOIN users u ON u.id = ip.user_id
+       JOIN advertiser_profiles ap ON ap.id = r.advertiser_id
+       LEFT JOIN transactions t ON t.request_id = r.id
+       WHERE r.id = $1 AND ap.user_id = $2`,
+      [id, req.user.id]
+    );
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: 'No se encontró esa solicitud entre las tuyas.' });
+    }
+    const row = result.rows[0];
+
+    if (row.status !== 'accepted') {
+      return res.status(400).json({ error: 'Solo puedes pagar solicitudes que ya fueron aceptadas.' });
+    }
+    if (row.transaction_status === 'paid') {
+      return res.status(400).json({ error: 'Esta solicitud ya fue pagada.' });
+    }
+
+    const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:5173';
+    const checkout = await createCheckout({
+      description: `${row.content_type} — ${row.influencer_name}`,
+      amountInQuetzales: row.amount,
+      successUrl: `${frontendUrl}/pago-exitoso?request_id=${id}`,
+      cancelUrl: `${frontendUrl}/pago-cancelado?request_id=${id}`,
+      metadata: { request_id: String(id), transaction_id: String(row.transaction_id) },
+    });
+
+    await pool.query(
+      `UPDATE transactions SET payment_reference = $1 WHERE id = $2`,
+      [checkout.id, row.transaction_id]
+    );
+
+    res.json({ checkout_url: checkout.checkout_url });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: err.message || 'Error al generar el link de pago.' });
+  }
+});
+
+// GET /api/requests/:id/payment-status
+// El anunciante consulta si su pago ya se completó. También sirve para
+// confirmar pagos de PRUEBA, ya que Recurrente no manda webhooks en modo TEST.
+router.get('/:id/payment-status', requireAuth, requireRole('anunciante'), async (req, res) => {
+  const { id } = req.params;
+
+  try {
+    const result = await pool.query(
+      `SELECT t.id AS transaction_id, t.status, t.payment_reference
+       FROM transactions t
+       JOIN requests r ON r.id = t.request_id
+       JOIN advertiser_profiles ap ON ap.id = r.advertiser_id
+       WHERE r.id = $1 AND ap.user_id = $2`,
+      [id, req.user.id]
+    );
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: 'No se encontró una transacción para esta solicitud.' });
+    }
+    const tx = result.rows[0];
+
+    // Si ya la marcamos como pagada (por webhook, en modo LIVE), respondemos directo.
+    if (tx.status === 'paid') {
+      return res.json({ status: 'paid' });
+    }
+
+    // Respaldo para modo TEST: consultamos directo a Recurrente el estado del checkout.
+    if (tx.payment_reference) {
+      const checkout = await getCheckout(tx.payment_reference);
+      if (checkout.status === 'paid' || checkout.status === 'succeeded') {
+        await pool.query(
+          `UPDATE transactions SET status = 'paid', paid_at = NOW() WHERE id = $1`,
+          [tx.transaction_id]
+        );
+        return res.json({ status: 'paid' });
+      }
+    }
+
+    res.json({ status: tx.status });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: err.message || 'Error al verificar el estado del pago.' });
   }
 });
 
