@@ -232,4 +232,84 @@ router.get('/:id/payment-status', requireAuth, requireRole('anunciante'), async 
   }
 });
 
+// Verifica si userId es el anunciante o el influencer dueño de la solicitud id.
+// Devuelve null si la solicitud no existe, false si no tiene permiso, true si sí.
+async function checkRequestAccess(id, userId) {
+  const result = await pool.query(
+    `SELECT ap.user_id AS advertiser_user_id, ip.user_id AS influencer_user_id
+     FROM requests r
+     JOIN spaces s ON s.id = r.space_id
+     JOIN influencer_profiles ip ON ip.id = s.influencer_id
+     JOIN advertiser_profiles ap ON ap.id = r.advertiser_id
+     WHERE r.id = $1`,
+    [id]
+  );
+  if (result.rows.length === 0) return null;
+  const { advertiser_user_id, influencer_user_id } = result.rows[0];
+  return userId === advertiser_user_id || userId === influencer_user_id;
+}
+
+// GET /api/requests/:id/messages
+// Devuelve el historial de chat de una solicitud, del más viejo al más nuevo.
+router.get('/:id/messages', requireAuth, async (req, res) => {
+  const { id } = req.params;
+  try {
+    const access = await checkRequestAccess(id, req.user.id);
+    if (access === null) {
+      return res.status(404).json({ error: 'No se encontró esa solicitud.' });
+    }
+    if (access === false) {
+      return res.status(403).json({ error: 'No tienes permiso para ver esta conversación.' });
+    }
+
+    const result = await pool.query(
+      `SELECT m.id, m.request_id, m.sender_id, m.body, m.created_at, u.name AS sender_name
+       FROM messages m
+       JOIN users u ON u.id = m.sender_id
+       WHERE m.request_id = $1
+       ORDER BY m.created_at ASC`,
+      [id]
+    );
+    res.json(result.rows);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Error al obtener los mensajes.' });
+  }
+});
+
+// POST /api/requests/:id/messages
+// Envía un mensaje nuevo en el chat de una solicitud.
+router.post('/:id/messages', requireAuth, async (req, res) => {
+  const { id } = req.params;
+  const { body } = req.body;
+
+  if (!body || !body.trim()) {
+    return res.status(400).json({ error: 'El mensaje no puede estar vacío.' });
+  }
+
+  try {
+    const access = await checkRequestAccess(id, req.user.id);
+    if (access === null) {
+      return res.status(404).json({ error: 'No se encontró esa solicitud.' });
+    }
+    if (access === false) {
+      return res.status(403).json({ error: 'No tienes permiso para escribir en esta conversación.' });
+    }
+
+    const result = await pool.query(
+      `WITH new_message AS (
+         INSERT INTO messages (request_id, sender_id, body) VALUES ($1, $2, $3) RETURNING *
+       )
+       SELECT nm.id, nm.request_id, nm.sender_id, nm.body, nm.created_at, u.name AS sender_name
+       FROM new_message nm
+       JOIN users u ON u.id = nm.sender_id`,
+      [id, req.user.id, body.trim()]
+    );
+    res.status(201).json(result.rows[0]);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Error al enviar el mensaje.' });
+  }
+});
+
 module.exports = router;
