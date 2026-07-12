@@ -23,6 +23,12 @@ createdb alcance_db
 psql alcance_db < db/schema.sql
 ```
 
+Para aplicar cambios de esquema posteriores (migraciones en `db/migrations/`) contra la base configurada en `DATABASE_URL`:
+
+```bash
+npm run migrate
+```
+
 ## Correr el servidor
 
 ```bash
@@ -44,6 +50,7 @@ curl http://localhost:4000/api/health
 | POST | `/api/auth/register` | Crear cuenta (anunciante o influencer) | No |
 | POST | `/api/auth/login` | Iniciar sesión, devuelve JWT | No |
 | GET | `/api/spaces` | Catálogo de espacios (filtros: category, minFollowers, maxPrice) | No |
+| PATCH | `/api/influencer/profile` | Actualizar tu foto de perfil (`{ photo_url }`) | Influencer |
 | POST | `/api/spaces` | Publicar un espacio nuevo | Influencer |
 | PATCH | `/api/spaces/:id` | Editar/desactivar un espacio propio | Influencer |
 | POST | `/api/requests` | Enviar solicitud a un espacio | Anunciante |

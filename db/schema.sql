@@ -31,6 +31,7 @@ CREATE TABLE influencer_profiles (
     bio             TEXT,
     instagram_handle VARCHAR(60),
     tiktok_handle   VARCHAR(60),
+    photo_url       TEXT,                          -- enlace externo a la foto de perfil
     created_at      TIMESTAMP NOT NULL DEFAULT NOW()
 );
 

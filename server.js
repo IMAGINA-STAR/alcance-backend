@@ -6,6 +6,7 @@ const authRoutes = require('./routes/auth');
 const spacesRoutes = require('./routes/spaces');
 const requestsRoutes = require('./routes/requests');
 const webhooksRoutes = require('./routes/webhooks');
+const influencerRoutes = require('./routes/influencer');
 
 const app = express();
 const PORT = process.env.PORT || 4000;
@@ -24,6 +25,7 @@ app.use('/api/auth', authRoutes);
 app.use('/api/spaces', spacesRoutes);
 app.use('/api/requests', requestsRoutes);
 app.use('/api/webhooks', webhooksRoutes);
+app.use('/api/influencer', influencerRoutes);
 
 // Manejo de rutas no encontradas
 app.use((req, res) => {

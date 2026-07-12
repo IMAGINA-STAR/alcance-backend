@@ -28,7 +28,7 @@ router.get('/', async (req, res) => {
   const query = `
     SELECT
       s.id, s.content_type, s.price, s.description, s.created_at,
-      ip.id AS influencer_id, ip.category, ip.followers, ip.engagement_rate, ip.instagram_handle,
+      ip.id AS influencer_id, ip.category, ip.followers, ip.engagement_rate, ip.instagram_handle, ip.photo_url,
       u.name AS influencer_name
     FROM spaces s
     JOIN influencer_profiles ip ON ip.id = s.influencer_id
