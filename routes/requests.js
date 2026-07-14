@@ -39,12 +39,14 @@ router.get('/received', requireAuth, requireRole('influencer'), async (req, res)
   try {
     const result = await pool.query(
       `SELECT r.id, r.message, r.offered_budget, r.status, r.created_at,
-              s.content_type, ap.brand_name, u.email AS advertiser_email
+              s.content_type, ap.brand_name, u.email AS advertiser_email,
+              COALESCE(t.status, NULL) AS payment_status
        FROM requests r
        JOIN spaces s ON s.id = r.space_id
        JOIN influencer_profiles ip ON ip.id = s.influencer_id
        JOIN advertiser_profiles ap ON ap.id = r.advertiser_id
        JOIN users u ON u.id = ap.user_id
+       LEFT JOIN transactions t ON t.request_id = r.id
        WHERE ip.user_id = $1
        ORDER BY r.created_at DESC`,
       [req.user.id]
@@ -309,6 +311,78 @@ router.post('/:id/messages', requireAuth, async (req, res) => {
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: 'Error al enviar el mensaje.' });
+  }
+});
+
+// POST /api/requests/:id/reviews
+// El anunciante o el influencer de una solicitud ya pagada la califica.
+router.post('/:id/reviews', requireAuth, async (req, res) => {
+  const { id } = req.params;
+  const { rating, comment } = req.body;
+
+  const ratingNum = Number(rating);
+  if (!Number.isInteger(ratingNum) || ratingNum < 1 || ratingNum > 5) {
+    return res.status(400).json({ error: 'rating debe ser un número entero entre 1 y 5.' });
+  }
+
+  try {
+    const access = await checkRequestAccess(id, req.user.id);
+    if (access === null) {
+      return res.status(404).json({ error: 'No se encontró esa solicitud.' });
+    }
+    if (access === false) {
+      return res.status(403).json({ error: 'No tienes permiso para calificar esta solicitud.' });
+    }
+
+    const txResult = await pool.query('SELECT status FROM transactions WHERE request_id = $1', [id]);
+    if (txResult.rows.length === 0 || txResult.rows[0].status !== 'paid') {
+      return res.status(400).json({ error: 'Solo puedes calificar solicitudes que ya fueron pagadas.' });
+    }
+
+    const existing = await pool.query(
+      'SELECT id FROM reviews WHERE request_id = $1 AND reviewer_id = $2',
+      [id, req.user.id]
+    );
+    if (existing.rows.length > 0) {
+      return res.status(409).json({ error: 'Ya calificaste esta solicitud.' });
+    }
+
+    const result = await pool.query(
+      `INSERT INTO reviews (request_id, reviewer_id, rating, comment)
+       VALUES ($1, $2, $3, $4) RETURNING *`,
+      [id, req.user.id, ratingNum, comment || null]
+    );
+    res.status(201).json(result.rows[0]);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Error al enviar la calificación.' });
+  }
+});
+
+// GET /api/requests/:id/reviews
+// Devuelve las reseñas existentes de una solicitud (para saber si cada parte ya calificó).
+router.get('/:id/reviews', requireAuth, async (req, res) => {
+  const { id } = req.params;
+  try {
+    const access = await checkRequestAccess(id, req.user.id);
+    if (access === null) {
+      return res.status(404).json({ error: 'No se encontró esa solicitud.' });
+    }
+    if (access === false) {
+      return res.status(403).json({ error: 'No tienes permiso para ver las calificaciones de esta solicitud.' });
+    }
+
+    const result = await pool.query(
+      `SELECT id, request_id, reviewer_id, rating, comment, created_at
+       FROM reviews
+       WHERE request_id = $1
+       ORDER BY created_at ASC`,
+      [id]
+    );
+    res.json(result.rows);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Error al obtener las calificaciones.' });
   }
 });
 

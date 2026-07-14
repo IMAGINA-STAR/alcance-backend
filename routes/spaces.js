@@ -29,10 +29,23 @@ router.get('/', async (req, res) => {
     SELECT
       s.id, s.content_type, s.price, s.description, s.created_at,
       ip.id AS influencer_id, ip.category, ip.followers, ip.engagement_rate, ip.instagram_handle, ip.photo_url,
-      u.name AS influencer_name
+      u.name AS influencer_name,
+      rt.avg_rating, rt.review_count
     FROM spaces s
     JOIN influencer_profiles ip ON ip.id = s.influencer_id
     JOIN users u ON u.id = ip.user_id
+    LEFT JOIN (
+      SELECT s2.influencer_id,
+             ROUND(AVG(rv.rating)::numeric, 2) AS avg_rating,
+             COUNT(rv.id) AS review_count
+      FROM reviews rv
+      JOIN requests r ON r.id = rv.request_id
+      JOIN transactions t ON t.request_id = r.id AND t.status = 'paid'
+      JOIN spaces s2 ON s2.id = r.space_id
+      JOIN advertiser_profiles ap ON ap.id = r.advertiser_id
+      WHERE rv.reviewer_id = ap.user_id
+      GROUP BY s2.influencer_id
+    ) rt ON rt.influencer_id = ip.id
     WHERE ${conditions.join(' AND ')}
     ORDER BY s.created_at DESC
   `;
