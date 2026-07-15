@@ -28,6 +28,46 @@ router.get('/payouts', requireAuth, requireRole('admin'), async (req, res) => {
   }
 });
 
+// GET /api/admin/transactions
+// Visibilidad completa del negocio: todas las transacciones de la plataforma
+// (sin filtrar por estado de payout) más un resumen de comisión ganada,
+// monto total procesado y conteo por estado de negocio.
+router.get('/transactions', requireAuth, requireRole('admin'), async (req, res) => {
+  try {
+    const summaryResult = await pool.query(
+      `SELECT
+         COALESCE(SUM(CASE WHEN status = 'paid' THEN commission_amount ELSE 0 END), 0) AS total_commission,
+         COALESCE(SUM(CASE WHEN status = 'paid' THEN amount ELSE 0 END), 0) AS total_processed,
+         COUNT(*) FILTER (WHERE status = 'paid' AND payout_status = 'pagado') AS completadas_count,
+         COUNT(*) FILTER (WHERE status = 'paid' AND payout_status = 'pendiente') AS pendientes_count,
+         COUNT(*) FILTER (WHERE status != 'paid') AS sin_pagar_count,
+         COUNT(*) AS total_count
+       FROM transactions`
+    );
+
+    const transactionsResult = await pool.query(
+      `SELECT t.id AS transaction_id, t.amount, t.commission_rate, t.commission_amount,
+              t.influencer_amount, t.status AS transaction_status, t.payout_status,
+              t.created_at, t.paid_at,
+              adv_u.name AS advertiser_name, adv_u.email AS advertiser_email,
+              inf_u.name AS influencer_name, inf_u.email AS influencer_email
+       FROM transactions t
+       JOIN requests r ON r.id = t.request_id
+       JOIN advertiser_profiles ap ON ap.id = r.advertiser_id
+       JOIN users adv_u ON adv_u.id = ap.user_id
+       JOIN spaces s ON s.id = r.space_id
+       JOIN influencer_profiles ip ON ip.id = s.influencer_id
+       JOIN users inf_u ON inf_u.id = ip.user_id
+       ORDER BY t.created_at DESC`
+    );
+
+    res.json({ summary: summaryResult.rows[0], transactions: transactionsResult.rows });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Error al obtener las transacciones de la plataforma.' });
+  }
+});
+
 // PATCH /api/admin/payouts/:transactionId/mark-paid
 // Marca una transacción como pagada al influencer, guardando la fecha y
 // una referencia de pago opcional.
