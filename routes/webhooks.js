@@ -1,6 +1,6 @@
 const express = require('express');
 const { Webhook } = require('svix');
-const pool = require('../db/pool');
+const { markTransactionPaid } = require('../services/transactions');
 
 const router = express.Router();
 
@@ -33,10 +33,7 @@ router.post('/recurrente', async (req, res) => {
 
   try {
     if (event.event_type === 'intent.succeeded' && event.checkout?.id) {
-      await pool.query(
-        `UPDATE transactions SET status = 'paid', paid_at = NOW() WHERE payment_reference = $1`,
-        [event.checkout.id]
-      );
+      await markTransactionPaid({ paymentReference: event.checkout.id });
     }
     res.status(200).send('ok');
   } catch (err) {

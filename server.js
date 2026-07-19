@@ -8,6 +8,7 @@ const requestsRoutes = require('./routes/requests');
 const webhooksRoutes = require('./routes/webhooks');
 const influencerRoutes = require('./routes/influencer');
 const adminRoutes = require('./routes/admin');
+const notificationsRoutes = require('./routes/notifications');
 
 const app = express();
 const PORT = process.env.PORT || 4000;
@@ -28,6 +29,7 @@ app.use('/api/requests', requestsRoutes);
 app.use('/api/webhooks', webhooksRoutes);
 app.use('/api/influencer', influencerRoutes);
 app.use('/api/admin', adminRoutes);
+app.use('/api/notifications', notificationsRoutes);
 
 // Manejo de rutas no encontradas
 app.use((req, res) => {

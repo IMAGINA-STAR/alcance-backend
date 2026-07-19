@@ -2,6 +2,8 @@ const express = require('express');
 const pool = require('../db/pool');
 const { requireAuth, requireRole } = require('../middleware/auth');
 const { createCheckout, getCheckout } = require('../services/recurrente');
+const { markTransactionPaid } = require('../services/transactions');
+const { notify } = require('../services/notifications');
 
 const router = express.Router();
 const COMMISSION_RATE = 12.0; // porcentaje que se queda la plataforma
@@ -22,11 +24,29 @@ router.post('/', requireAuth, requireRole('anunciante'), async (req, res) => {
     const advertiserId = advertiserResult.rows[0].id;
 
     const result = await pool.query(
-      `INSERT INTO requests (space_id, advertiser_id, message, offered_budget)
-       VALUES ($1, $2, $3, $4) RETURNING *`,
+      `WITH new_request AS (
+         INSERT INTO requests (space_id, advertiser_id, message, offered_budget)
+         VALUES ($1, $2, $3, $4) RETURNING *
+       )
+       SELECT nr.*, u.id AS influencer_user_id, s.content_type, ap.brand_name
+       FROM new_request nr
+       JOIN spaces s ON s.id = nr.space_id
+       JOIN influencer_profiles ip ON ip.id = s.influencer_id
+       JOIN users u ON u.id = ip.user_id
+       JOIN advertiser_profiles ap ON ap.id = nr.advertiser_id`,
       [space_id, advertiserId, message || null, offered_budget]
     );
-    res.status(201).json(result.rows[0]);
+    const row = result.rows[0];
+
+    notify({
+      userId: row.influencer_user_id,
+      type: 'new_request',
+      title: 'Nueva solicitud de colaboración',
+      body: `${row.brand_name} te envió una propuesta para "${row.content_type}" por Q${Number(offered_budget).toFixed(2)}.`,
+      link: '/dashboard',
+    }).catch((err) => console.error('Error creando notificación de nueva solicitud:', err));
+
+    res.status(201).json(row);
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: 'Error al enviar la solicitud.' });
@@ -219,10 +239,7 @@ router.get('/:id/payment-status', requireAuth, requireRole('anunciante'), async 
     if (tx.payment_reference) {
       const checkout = await getCheckout(tx.payment_reference);
       if (checkout.status === 'paid' || checkout.status === 'succeeded') {
-        await pool.query(
-          `UPDATE transactions SET status = 'paid', paid_at = NOW() WHERE id = $1`,
-          [tx.transaction_id]
-        );
+        await markTransactionPaid({ transactionId: tx.transaction_id });
         return res.json({ status: 'paid' });
       }
     }
@@ -249,6 +266,24 @@ async function checkRequestAccess(id, userId) {
   if (result.rows.length === 0) return null;
   const { advertiser_user_id, influencer_user_id } = result.rows[0];
   return userId === advertiser_user_id || userId === influencer_user_id;
+}
+
+// Devuelve los datos de ambas partes de una solicitud (usados para saber a
+// quién notificar un mensaje nuevo), o null si la solicitud no existe.
+async function getRequestParties(id) {
+  const result = await pool.query(
+    `SELECT ap.user_id AS advertiser_user_id, adv_u.name AS advertiser_name,
+            ip.user_id AS influencer_user_id, inf_u.name AS influencer_name
+     FROM requests r
+     JOIN spaces s ON s.id = r.space_id
+     JOIN influencer_profiles ip ON ip.id = s.influencer_id
+     JOIN users inf_u ON inf_u.id = ip.user_id
+     JOIN advertiser_profiles ap ON ap.id = r.advertiser_id
+     JOIN users adv_u ON adv_u.id = ap.user_id
+     WHERE r.id = $1`,
+    [id]
+  );
+  return result.rows[0] || null;
 }
 
 // GET /api/requests/:id/messages
@@ -290,11 +325,13 @@ router.post('/:id/messages', requireAuth, async (req, res) => {
   }
 
   try {
-    const access = await checkRequestAccess(id, req.user.id);
-    if (access === null) {
+    const parties = await getRequestParties(id);
+    if (parties === null) {
       return res.status(404).json({ error: 'No se encontró esa solicitud.' });
     }
-    if (access === false) {
+    const isAdvertiser = req.user.id === parties.advertiser_user_id;
+    const isInfluencer = req.user.id === parties.influencer_user_id;
+    if (!isAdvertiser && !isInfluencer) {
       return res.status(403).json({ error: 'No tienes permiso para escribir en esta conversación.' });
     }
 
@@ -307,7 +344,19 @@ router.post('/:id/messages', requireAuth, async (req, res) => {
        JOIN users u ON u.id = nm.sender_id`,
       [id, req.user.id, body.trim()]
     );
-    res.status(201).json(result.rows[0]);
+    const savedMessage = result.rows[0];
+
+    const recipientId = isAdvertiser ? parties.influencer_user_id : parties.advertiser_user_id;
+    const recipientLink = isAdvertiser ? '/dashboard' : '/mis-solicitudes';
+    notify({
+      userId: recipientId,
+      type: 'new_message',
+      title: 'Nuevo mensaje',
+      body: `${savedMessage.sender_name} te escribió: "${savedMessage.body.slice(0, 140)}"`,
+      link: recipientLink,
+    }).catch((err) => console.error('Error creando notificación de nuevo mensaje:', err));
+
+    res.status(201).json(savedMessage);
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: 'Error al enviar el mensaje.' });
