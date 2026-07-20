@@ -7,6 +7,7 @@ const { notify } = require('../services/notifications');
 
 const router = express.Router();
 const COMMISSION_RATE = 12.0; // porcentaje que se queda la plataforma
+const PAYABLE_STATUSES = ['delivered', 'completed']; // estados en los que ya se puede cobrar
 
 // POST /api/requests
 // Un anunciante envía una solicitud para un espacio publicado.
@@ -59,6 +60,7 @@ router.get('/received', requireAuth, requireRole('influencer'), async (req, res)
   try {
     const result = await pool.query(
       `SELECT r.id, r.message, r.offered_budget, r.status, r.created_at,
+              r.evidence_url, r.evidence_note, r.delivered_at,
               s.content_type, ap.brand_name, u.email AS advertiser_email,
               COALESCE(t.status, NULL) AS payment_status
        FROM requests r
@@ -84,6 +86,7 @@ router.get('/sent', requireAuth, requireRole('anunciante'), async (req, res) => 
   try {
     const result = await pool.query(
       `SELECT r.id, r.message, r.offered_budget, r.status, r.created_at,
+              r.evidence_url, r.evidence_note, r.delivered_at,
               s.content_type, u.name AS influencer_name,
               COALESCE(t.status, NULL) AS payment_status
        FROM requests r
@@ -157,8 +160,48 @@ router.patch('/:id/respond', requireAuth, requireRole('influencer'), async (req,
   }
 });
 
+// POST /api/requests/:id/mark-delivered
+// El influencer marca su colaboración como entregada, adjuntando el link
+// (o nota) de evidencia. Solo se permite si la solicitud ya fue aceptada.
+router.post('/:id/mark-delivered', requireAuth, requireRole('influencer'), async (req, res) => {
+  const { id } = req.params;
+  const { evidence_url, evidence_note } = req.body;
+
+  if (!evidence_url || !evidence_url.trim()) {
+    return res.status(400).json({ error: 'evidence_url es obligatorio.' });
+  }
+
+  try {
+    const ownerCheck = await pool.query(
+      `SELECT r.id, r.status FROM requests r
+       JOIN spaces s ON s.id = r.space_id
+       JOIN influencer_profiles ip ON ip.id = s.influencer_id
+       WHERE r.id = $1 AND ip.user_id = $2`,
+      [id, req.user.id]
+    );
+    if (ownerCheck.rows.length === 0) {
+      return res.status(403).json({ error: 'Esta solicitud no corresponde a uno de tus espacios.' });
+    }
+    if (ownerCheck.rows[0].status !== 'accepted') {
+      return res.status(400).json({ error: 'Solo puedes marcar como entregadas solicitudes que ya fueron aceptadas.' });
+    }
+
+    const updated = await pool.query(
+      `UPDATE requests
+       SET status = 'delivered', evidence_url = $1, evidence_note = $2, delivered_at = NOW(), updated_at = NOW()
+       WHERE id = $3 RETURNING *`,
+      [evidence_url.trim(), evidence_note ? evidence_note.trim() : null, id]
+    );
+
+    res.json(updated.rows[0]);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Error al marcar la solicitud como entregada.' });
+  }
+});
+
 // POST /api/requests/:id/checkout
-// El anunciante genera un link de pago de Recurrente para una solicitud ya aceptada.
+// El anunciante genera un link de pago de Recurrente para una solicitud ya entregada.
 router.post('/:id/checkout', requireAuth, requireRole('anunciante'), async (req, res) => {
   const { id } = req.params;
 
@@ -181,8 +224,8 @@ router.post('/:id/checkout', requireAuth, requireRole('anunciante'), async (req,
     }
     const row = result.rows[0];
 
-    if (row.status !== 'accepted') {
-      return res.status(400).json({ error: 'Solo puedes pagar solicitudes que ya fueron aceptadas.' });
+    if (!PAYABLE_STATUSES.includes(row.status)) {
+      return res.status(400).json({ error: 'Solo puedes pagar solicitudes que ya fueron marcadas como entregadas.' });
     }
     if (row.transaction_status === 'paid') {
       return res.status(400).json({ error: 'Esta solicitud ya fue pagada.' });
