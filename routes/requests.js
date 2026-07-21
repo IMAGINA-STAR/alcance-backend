@@ -173,9 +173,12 @@ router.post('/:id/mark-delivered', requireAuth, requireRole('influencer'), async
 
   try {
     const ownerCheck = await pool.query(
-      `SELECT r.id, r.status FROM requests r
+      `SELECT r.id, r.status, s.content_type, u.name AS influencer_name, ap.user_id AS advertiser_user_id
+       FROM requests r
        JOIN spaces s ON s.id = r.space_id
        JOIN influencer_profiles ip ON ip.id = s.influencer_id
+       JOIN users u ON u.id = ip.user_id
+       JOIN advertiser_profiles ap ON ap.id = r.advertiser_id
        WHERE r.id = $1 AND ip.user_id = $2`,
       [id, req.user.id]
     );
@@ -192,6 +195,15 @@ router.post('/:id/mark-delivered', requireAuth, requireRole('influencer'), async
        WHERE id = $3 RETURNING *`,
       [evidence_url.trim(), evidence_note ? evidence_note.trim() : null, id]
     );
+
+    const { advertiser_user_id, influencer_name, content_type } = ownerCheck.rows[0];
+    notify({
+      userId: advertiser_user_id,
+      type: 'request_delivered',
+      title: 'Tu colaboración fue entregada',
+      body: `${influencer_name} marcó "${content_type}" como entregado. Ya puedes revisarla y pagar.`,
+      link: '/mis-solicitudes',
+    }).catch((err) => console.error('Error creando notificación de entrega:', err));
 
     res.json(updated.rows[0]);
   } catch (err) {
