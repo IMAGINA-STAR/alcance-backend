@@ -30,7 +30,14 @@ router.get('/', async (req, res) => {
       s.id, s.content_type, s.price, s.description, s.created_at,
       ip.id AS influencer_id, ip.category, ip.followers, ip.engagement_rate, ip.instagram_handle, ip.photo_url,
       u.name AS influencer_name,
-      rt.avg_rating, rt.review_count
+      rt.avg_rating, rt.review_count,
+      COALESCE((
+        SELECT json_agg(json_build_object(
+          'platform', sa.platform, 'handle', sa.handle, 'followers_count', sa.followers_count
+        ) ORDER BY sa.platform)
+        FROM influencer_social_accounts sa
+        WHERE sa.influencer_id = ip.id
+      ), '[]'::json) AS social_accounts
     FROM spaces s
     JOIN influencer_profiles ip ON ip.id = s.influencer_id
     JOIN users u ON u.id = ip.user_id
