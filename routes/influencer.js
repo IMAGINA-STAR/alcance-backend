@@ -4,7 +4,7 @@ const { requireAuth, requireRole } = require('../middleware/auth');
 
 const router = express.Router();
 
-const SOCIAL_PLATFORMS = ['instagram', 'tiktok', 'youtube'];
+const SOCIAL_PLATFORMS = ['instagram', 'tiktok', 'youtube', 'facebook'];
 
 // GET /api/influencer/profile
 // Devuelve el perfil del influencer autenticado (incluye photo_url y el
